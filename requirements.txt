@@ -1,0 +1,19 @@
+
+# Reddit Scraper Dependencies
+
+# Web automation and scraping
+playwright==1.48.0
+beautifulsoup4==4.12.3
+
+# HTML parsing support
+lxml==5.3.0
+html5lib==1.1
+
+# Async support (usually included with Python 3.7+, but specified for clarity)
+asyncio==3.4.3
+
+# Optional: Data handling and export
+pandas==2.2.3
+
+# Optional: Environment variables
+python-dotenv==1.0.1
