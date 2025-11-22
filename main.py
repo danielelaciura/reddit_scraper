@@ -3,8 +3,8 @@ import argparse
 import logging
 import json 
 import time 
-from typing import List, Optional
-from bs4 import BeautifulSoup 
+import os
+from typing import List
 from playwright.async_api import async_playwright, Playwright
 
 # Configure logging
@@ -16,27 +16,20 @@ logger = logging.getLogger(__name__)
 
 #constants
 REDDIT_URL = "https://www.reddit.com"
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-}
 
 class RedditScraper:
     def __init__(self, search_query: str):
         self.search_query = search_query
         self.subreddits: List[dict] = []
-        self.page = None
-        self.browser = None
-        self.playwright = None
 
-    async def start_playwright(self, playwright: Playwright, url):
+    async def start_playwright(self, playwright: Playwright):
         self.playwright = playwright
         self.browser = await playwright.chromium.launch(headless=False)
         self.page = await self.browser.new_page()
-        await self.page.goto(url, wait_until='networkidle')
 
     async def search_subreddits(self, playwright: Playwright) -> List[dict]:
-        url = f"{REDDIT_URL}/search/?q={self.search_query}"
-        await self.start_playwright(playwright, url)
+        await self.start_playwright(playwright)
+        await self.page.goto(f"{REDDIT_URL}/search/?q={self.search_query}", wait_until='networkidle')
         await self.page.reload()
 
         # for i in range(20):
@@ -56,58 +49,79 @@ class RedditScraper:
                 href = REDDIT_URL + href
 
             self.subreddits.append({"title": title, "url": href})
+            
+        self.page.close()
 
         return self.subreddits
 
-    async def scrape_subreddit(self, subreddit: dict, playwright: Playwright) -> str:
+    async def scrape_subreddit(self, subreddits, playwright: Playwright):
         try: 
-            await self.start_playwright(playwright, subreddit["url"])
-            await self.page.reload()
-         
-            body = await self.page.locator("shreddit-post-text-body p").all_text_contents()
-            text = "\n".join(body)
-            subreddit_data ={
-                "url" : subreddit["url"],
-                "title": subreddit["title"] if subreddit["title"] else "No title",
-                "scraped_at" : time.strftime("%Y-%m-%d %H:%M:%S"),
-                "body": text
-            }
+            results = []
+            await self.start_playwright(playwright)
+            for subreddit in subreddits:
+                await self.page.goto(subreddit["url"], wait_until="load", timeout=0)
+                await self.page.reload()
+                await self.page.mouse.wheel(0, 15000)
+
+                try:
+                    await self.page.wait_for_selector("shreddit-post-text-body p", timeout=2000)
+                except:
+                    pass
+
+                try:
+                    await self.page.wait_for_selector("shreddit-comment-tree p", timeout=2000)
+                except:
+                    pass
+
+                body = await self.page.locator("shreddit-post-text-body p").all_text_contents()
+                body_text = "\n".join(body)
+
+                comments = await self.page.locator("shreddit-comment-tree p").all_text_contents()
+                comments_text = "\n".join(comments)
+
+                subreddit_data ={
+                    "url" : subreddit["url"],
+                    "title": subreddit["title"] if subreddit["title"] else "No title",
+                    "scraped_at" : time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "body": body_text,
+                    "comments_tree": comments_text
+                }
+
+                results.append(subreddit_data)
  
         except Exception as e:
             print(f'ERROR: {e}')
         
-        return subreddit_data
+        return results
 
     def save_scraped_data(self, data):
         if not data:
-            print(f'No data')
-            return 
-        filename_json= (self.search_query + time.strftime("%Y-%m-%d %H:%M:%S") + ".json").replace(" ", "_") 
-        # JSON
+            print("No data")
+            return
+
+        os.makedirs("data", exist_ok=True)
+
+        filename = (
+            time.strftime("%Y-%m-%d %H:%M:%S") + "_" + self.search_query + ".json"
+        ).replace(" ", "_")
+
+        filepath = os.path.join("data", filename)
+
         try:
-            with open(filename_json, "w", encoding="utf-8") as file:
+            with open(filepath, "w", encoding="utf-8") as file:
                 json.dump(data, file, indent=2, ensure_ascii=True)
-            print(f'Python Topics saved: {filename_json}')
+            print(f"Topics saved: {filepath}")
         except Exception as e:
-            print("ERROR:",e)
+            print("ERROR:", e)
+
 
     async def run(self) -> List[str]:
+        results = []
         async with async_playwright() as playwright:
             await self.search_subreddits(playwright)
-
-        results = []
-        for subreddit in self.subreddits:
-            try:
-                async with async_playwright() as playwright:
-                    data = await self.scrape_subreddit(subreddit, playwright)
-                results.append(data)
-            except Exception as e:
-                logger.error(f"Error scraping {subreddit}: {e}")
-        self.save_scraped_data(results)
-        # if self.browser:
-        #     await self.browser.close()
-        return results
-        
+            results = await self.scrape_subreddit(self.subreddits, playwright)
+            self.save_scraped_data(results)
+      
 def get_search_query() -> str:
     parser = argparse.ArgumentParser(
         description='Reddit Scraper - Search and extract data from Reddit'
@@ -118,6 +132,7 @@ def get_search_query() -> str:
         nargs='?',
         help='Search query for Reddit'
     )
+    
     parser.add_argument(
         '-i', '--interactive',
         action='store_true',
